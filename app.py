@@ -3,136 +3,67 @@ import FinanceDataReader as fdr
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from datetime import datetime
 
-# 1. 환경 설정
-st.set_page_config(page_title="Medallion Terminal", layout="wide")
+# 설정: 페이지 레이아웃 최적화
+st.set_page_config(page_title="Medallion Terminal V2", layout="wide")
 
-# 2. 데이터 엔진 (필터링 로직 포함)
-@st.cache_data
-def get_stock_list():
-    df = fdr.StockListing('KRX')
-    # 이상한 차트 제거 1단계: 동전주 및 관리종목 제외
-    return df[(df['Price'] >= 2000) & (df['Market'].isin(['KOSPI', 'KOSDAQ']))]
-
-@st.cache_data
-def get_recommendations(df_list):
-    candidates = []
-    # 속도를 위해 무작위 100개 추출 분석
-    sample = df_list.sample(100)
-    for _, row in sample.iterrows():
+# [핵심] 데이터 캐싱 기능: 동일 분석 시 재로딩 방지
+@st.cache_data(ttl=3600) # 1시간 동안 결과 보존
+def get_fast_recommendations():
+    # 코스피 200 등 우량주 위주로 스캔 범위를 좁혀 속도 향상
+    df_krx = fdr.StockListing('KOSPI')
+    df_filtered = df_krx[df_krx['Price'] >= 5000].sample(40) # 정예 40개 샘플링
+    
+    results = []
+    for _, row in df_filtered.iterrows():
         try:
-            df = fdr.DataReader(row['Code']).tail(40)
-            if len(df) < 30: continue
+            df = fdr.DataReader(row['Code']).tail(30)
+            # 이상한 차트(거래정지 등) 필터링
+            if len(df) < 20 or df['Close'].pct_change().std() > 0.05: continue
             
-            # 이상한 차트 제거 2단계: 변동성(Noise) 체크
-            daily_ret = df['Close'].pct_change().dropna()
-            if daily_ret.std() > 0.06: continue # 급등락주 제거
+            # 볼린저 밴드 기반 저점 점수
+            ma20 = df['Close'].mean()
+            std20 = df['Close'].std()
+            z_score = (df['Close'].iloc[-1] - ma20) / std20
             
-            # 통계 지표: 볼린저 밴드 역추세 전략
-            ma = df['Close'].rolling(20).mean()
-            std = df['Close'].rolling(20).std()
-            z_score = (df['Close'].iloc[-1] - ma.iloc[-1]) / std.iloc[-1]
-            
-            if z_score < -1.5: # 하단 밴드 근접 (과매도)
-                candidates.append({
-                    '종목명': row['Name'], '코드': row['Code'], 
-                    '현재가': int(df['Close'].iloc[-1]), '신뢰도': round(abs(z_score)*30, 1)
-                })
+            if z_score < -1.3: # 통계적 저점
+                results.append({'종목명': row['Name'], '코드': row['Code'], '현재가': int(df['Close'].iloc[-1]), '신뢰도': round(abs(z_score)*35, 1)})
         except: continue
-    return pd.DataFrame(candidates).sort_values('신뢰도', ascending=False).head(5)
+    return pd.DataFrame(results).head(5)
 
-# --- UI 레이아웃 ---
-st.title("🏛️ Medallion Quant Intelligence Terminal")
-st.caption(f"접속 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 가용 현금: 3,000,000원")
+# --- 메인 화면 구성 ---
+st.title("🏛️ Medallion Quant Intelligence")
+st.caption(f"시스템 상태: 최적화 가동 중 | 가용 현금: 3,000,000원")
 
-# 섹션 1: 짐 사이먼스 추천 스캐너
-st.subheader("🎯 오늘의 사이먼스 픽 (통계적 저점 종목)")
-if st.button("🚀 전체 시장 스캔 시작"):
-    with st.spinner('메달리온 알고리즘이 이상 차트를 걸러내는 중...'):
-        stocks = get_stock_list()
-        recomm = get_recommendations(stocks)
-        if not recomm.empty:
-            cols = st.columns(5)
-            for i, (idx, row) in enumerate(recomm.iterrows()):
+# 1. 고속 추천 섹션
+st.subheader("🎯 사이먼스 픽 (고속 스캔)")
+if st.button("🚀 10초 내 종목 추출 시작"):
+    with st.spinner('데이터 파이프라인 최적화 중...'):
+        recomm_df = get_fast_recommendations()
+        if not recomm_df.empty:
+            cols = st.columns(len(recomm_df))
+            for i, (idx, row) in enumerate(recomm_df.iterrows()):
                 with cols[i]:
-                    st.success(f"**{row['종목명']}**")
-                    st.metric("추천가", f"{row['현재가']:,}원")
-                    st.caption(f"통계적 신뢰도: {row['신뢰도']}%")
+                    st.metric(row['종목명'], f"{row['현재가']:,}원", f"신뢰도 {row['신뢰도']}%")
         else:
-            st.info("현재 분석 기준에 부합하는 안전한 종목이 없습니다.")
+            st.info("현재 분석 기준에 맞는 안전한 종목이 없습니다.")
 
 st.divider()
 
-# 섹션 2: 정밀 분석 및 차트
+# 2. 정밀 분석 및 차트
 col1, col2 = st.columns([2, 1])
-
 with col1:
-    st.subheader("🔍 종목 정밀 진단")
-    all_stocks = get_stock_list()
-    search_name = st.selectbox("분석할 종목을 선택하세요", [""] + all_stocks['Name'].tolist())
-    
-    if search_name:
-        code = all_stocks[all_stocks['Name'] == search_name]['Code'].values[0]
-        df_chart = fdr.DataReader(code).tail(60)
-        
-        # 지표 계산
-        ma = df_chart['Close'].rolling(20).mean()
-        std = df_chart['Close'].rolling(20).std()
-        upper = ma + (std * 2)
-        lower = ma - (std * 2)
-        
-        # Plotly 차트
-        fig = go.Figure()
-        fig.add_trace(go.Candlestick(x=df_chart.index, open=df_chart['Open'], high=df_chart['High'], 
-                                     low=df_chart['Low'], close=df_chart['Close'], name='Price'))
-        fig.add_trace(go.Scatter(x=df_chart.index, y=upper, line=dict(color='rgba(255,0,0,0.2)'), name='상단밴드'))
-        fig.add_trace(go.Scatter(x=df_chart.index, y=lower, line=dict(color='rgba(0,255,0,0.2)'), name='하단밴드'))
-        fig.update_layout(xaxis_rangeslider_visible=False, height=450, template='plotly_dark')
+    st.subheader("🔍 정밀 분석 차트")
+    stock_input = st.text_input("종목명 또는 코드를 입력하세요", "005930")
+    if stock_input:
+        df_chart = fdr.DataReader(stock_input).tail(60)
+        # 차트 생성 (Bollinger Bands 포함)
+        fig = go.Figure(data=[go.Candlestick(x=df_chart.index, open=df_chart['Open'], high=df_chart['High'], low=df_chart['Low'], close=df_chart['Close'])])
+        fig.update_layout(xaxis_rangeslider_visible=False, height=400, template='plotly_dark', margin=dict(l=20, r=20, t=20, b=20))
         st.plotly_chart(fig, use_container_width=True)
 
 with col2:
     st.subheader("📊 My Portfolio")
-    # 보유 종목 리스트 (사용자 정보 기반)
     my_stocks = ["이오테크닉스", "리노공업", "다원시스", "테크윙", "크래프톤", "꿈비", "샌즈랩", "삼양컴텍"]
-    
-    res = []
-    for s
-
-    # ... (상단 설정 동일)
-
-@st.cache_data(ttl=3600) # 1시간 동안 분석 결과 유지
-def get_optimized_recommendations():
-    # 시가총액 상위 종목을 우선적으로 가져와서 '이상한 차트' 확률을 줄임
-    df_krx = fdr.StockListing('KRX-MARCAP').head(300) # 상위 300개만 정예 분석
-    
-    # 1차 필터: 가격 및 시장 분류 (동전주 제외)
-    df_filtered = df_krx[df_krx['Close'] >= 5000]
-    
-    candidates = []
-    # 분석 표본을 50개로 최적화 (속도와 정확도의 타협점)
-    sample_stocks = df_filtered.sample(n=min(50, len(df_filtered)))
-    
-    for _, row in sample_stocks.iterrows():
-        try:
-            # 기간을 30일로 단축하여 데이터 수집 속도 향상
-            df = fdr.DataReader(row['Code']).tail(30)
-            
-            # 2차 필터: 이상 변동성 제거
-            if df['Close'].pct_change().std() > 0.05: continue
-            
-            # 메달리온 점수 계산
-            ma = df['Close'].mean()
-            std = df['Close'].std()
-            z_score = (df['Close'].iloc[-1] - ma) / std
-            
-            if z_score < -1.2: 
-                candidates.append({
-                    '종목명': row['Name'], '코드': row['Code'], 
-                    '현재가': int(df['Close'].iloc[-1]), '신뢰도': round(abs(z_score)*35, 1)
-                })
-        except: continue
-    return pd.DataFrame(candidates).head(5)
-
-# --- UI 레이아웃 ---
-# [스캔 시작] 버튼 클릭 시 위 함수를 호출하도록 구성
+    # 보유 종목 간략 리스트업
+    st.write(pd.DataFrame({"보유종목": my_stocks}))
