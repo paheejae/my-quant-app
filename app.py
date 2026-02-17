@@ -98,3 +98,41 @@ with col2:
     
     res = []
     for s
+
+    # ... (상단 설정 동일)
+
+@st.cache_data(ttl=3600) # 1시간 동안 분석 결과 유지
+def get_optimized_recommendations():
+    # 시가총액 상위 종목을 우선적으로 가져와서 '이상한 차트' 확률을 줄임
+    df_krx = fdr.StockListing('KRX-MARCAP').head(300) # 상위 300개만 정예 분석
+    
+    # 1차 필터: 가격 및 시장 분류 (동전주 제외)
+    df_filtered = df_krx[df_krx['Close'] >= 5000]
+    
+    candidates = []
+    # 분석 표본을 50개로 최적화 (속도와 정확도의 타협점)
+    sample_stocks = df_filtered.sample(n=min(50, len(df_filtered)))
+    
+    for _, row in sample_stocks.iterrows():
+        try:
+            # 기간을 30일로 단축하여 데이터 수집 속도 향상
+            df = fdr.DataReader(row['Code']).tail(30)
+            
+            # 2차 필터: 이상 변동성 제거
+            if df['Close'].pct_change().std() > 0.05: continue
+            
+            # 메달리온 점수 계산
+            ma = df['Close'].mean()
+            std = df['Close'].std()
+            z_score = (df['Close'].iloc[-1] - ma) / std
+            
+            if z_score < -1.2: 
+                candidates.append({
+                    '종목명': row['Name'], '코드': row['Code'], 
+                    '현재가': int(df['Close'].iloc[-1]), '신뢰도': round(abs(z_score)*35, 1)
+                })
+        except: continue
+    return pd.DataFrame(candidates).head(5)
+
+# --- UI 레이아웃 ---
+# [스캔 시작] 버튼 클릭 시 위 함수를 호출하도록 구성
