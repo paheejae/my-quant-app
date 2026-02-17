@@ -1,47 +1,42 @@
 import streamlit as st
 import FinanceDataReader as fdr
 import pandas as pd
-from datetime import datetime
 
-# 1. 페이지 설정
-st.set_page_config(page_title="Sungjun Quant Dashboard", layout="wide")
-
-# 2. 데이터 엔진 (전 종목 리스트 로드)
+# 1. 전 종목 리스트 로드 (코스피, 코스닥)
 @st.cache_data
-def get_all_stocks():
+def get_stock_list():
     return fdr.StockListing('KRX')[['Code', 'Name', 'Market']]
 
+# 메인 로직 시작
 try:
-    all_stocks = get_all_stocks()
-    
-    # 3. 사이드바: 가용 현금 정보
-    st.sidebar.title("💰 자산 현황")
-    st.sidebar.metric("가용 현금", "3,000,000원")
-    
-    # 4. 메인 화면: 종목 검색
-    st.title("🇰🇷 네이버 금융 기반 퀀트 시스템")
-    st.divider()
-    
+    all_stocks = get_stock_list()
+
+    st.title("🚀 Sungjun's Naver Quant Engine")
+    st.sidebar.metric("가용 현금", "3,000,000원") # [cite: 2026-01-28]
+
+    # 2. 종목 검색 기능
     st.subheader("🔍 실시간 종목 검색")
-    search_name = st.selectbox("종목명을 선택하거나 입력하세요", [""] + all_stocks['Name'].tolist())
+    search_name = st.selectbox("분석할 종목을 선택하세요", [""] + all_stocks['Name'].tolist())
 
     if search_name:
-        target_code = all_stocks[all_stocks['Name'] == search_name]['Code'].values[0]
-        df_price = fdr.DataReader(target_code).tail(2)
-        
-        if not df_price.empty:
-            curr_price = int(df_price['Close'].iloc[-1])
-            prev_price = int(df_price['Close'].iloc[-2])
-            change_pct = ((curr_price / prev_price) - 1) * 100
-            
-            st.metric(f"{search_name} ({target_code})", f"{curr_price:,.0f}원", delta=f"{change_pct:.2f}%")
-            
-            if change_pct > 3:
-                st.success("🔥 강한 상승 모멘텀이 감지되었습니다! (정예 후보)")
-            elif change_pct < -3:
-                st.error("⚠️ 급락 주의: 퀀트 필터링 기준 제외 권고")
+        code = all_stocks[all_stocks['Name'] == search_name]['Code'].values[0]
+        df = fdr.DataReader(code).tail(2)
+        if not df.empty:
+            curr = int(df['Close'].iloc[-1])
+            st.success(f"**{search_name}** ({code}) 현재가: **{curr:,.0f}원**")
 
-    # 5. 내 포트폴리오 섹션
+    # 3. 나의 보유 종목 현황
     st.divider()
-    st.subheader("📊 나의 정예 포트폴리오 (실시간)")
-    # 종목 리스트 확인 작업 수행
+    st.subheader("📊 나의 정예 포트폴리오")
+    my_list = ["이오테크닉스", "리노공업", "다원시스", "테크윙", "크래프톤", "꿈비", "샌즈랩", "삼양컴텍"]
+    res = []
+    for s in my_list:
+        try:
+            c = all_stocks[all_stocks['Name'] == s]['Code'].values[0]
+            p = int(fdr.DataReader(c)['Close'].iloc[-1])
+            res.append({"종목명": s, "현재가": p, "코드": c})
+        except: continue
+    st.table(pd.DataFrame(res))
+
+except Exception as e:
+    st.error("데이터 엔진을 초기화 중입니다. 1~2분만 기다려주세요.")
