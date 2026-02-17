@@ -4,25 +4,24 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-st.set_page_config(page_title="Medallion Terminal V3", layout="wide")
+# 1. 페이지 설정
+st.set_page_config(page_title="Medallion Final Terminal", layout="wide")
 
 @st.cache_data
 def load_stock_info():
-    # 전체 종목을 가져오되, 추천 대상에서 2,000원 미만은 나중에 필터링
     return fdr.StockListing('KRX')[['Code', 'Name', 'Market']]
 
-# 1. 고속 추천 로직 (2,000원 미만 종목 완전 제외)
+# 2. 고속 추천 로직 (2,000원 이상 우량주 스캔)
 @st.cache_data(ttl=3600)
 def get_medallion_picks(stock_df):
-    # 기초 필터링: 관리종목 등을 피하기 위해 KOSPI/KOSDAQ 우량주 위주로 샘플링
-    sample_list = stock_df.sample(n=min(80, len(stock_df)))
+    sample_list = stock_df.sample(n=min(60, len(stock_df)))
     picks = []
     
     for _, row in sample_list.iterrows():
         try:
-            df = fdr.DataReader(row['Code']).tail(25)
-            # [필터] 데이터 부족하거나 현재가가 2,000원 미만인 종목은 즉시 패스
+            df = fdr.DataReader(row['Code']).tail(30)
             curr_price = int(df['Close'].iloc[-1])
+            # [필터] 2,000원 미만 및 데이터 부족 종목 제외
             if len(df) < 20 or curr_price < 2000: continue 
             
             ma = df['Close'].mean()
@@ -31,7 +30,7 @@ def get_medallion_picks(stock_df):
             
             z_score = (curr_price - ma) / std
             
-            # 통계적 하단 진입 시 추천 (Z-Score -1.2 이하)
+            # 통계적 저점 (Z-Score -1.2 이하)
             if z_score < -1.2:
                 picks.append({
                     '종목명': row['Name'], '코드': row['Code'], 
@@ -43,11 +42,11 @@ def get_medallion_picks(stock_df):
 # --- UI 레이아웃 ---
 stock_info = load_stock_info()
 st.title("🏛️ Medallion Quant Intelligence")
-st.caption("시스템 상태: 2,000원 미만 종목 필터링 적용 중 | 가용 현금: 3,000,000원") [cite: 2026-01-28]
+st.caption("시스템 상태: 2,000원 필터 및 거래량 분석 모드 활성 | 가용 현금: 3,000,000원")
 
-# 섹션 1: 추천 종목 (2,000원 이상만 추출)
+# 섹션 1: 추천 종목
 if st.button("🚀 실시간 통계 분석 시작"):
-    with st.spinner('이상 차트를 걸러내고 우량 종목을 찾는 중...'):
+    with st.spinner('시장의 통계적 우위를 찾는 중...'):
         recomm = get_medallion_picks(stock_info)
         if not recomm.empty:
             cols = st.columns(len(recomm))
@@ -57,11 +56,11 @@ if st.button("🚀 실시간 통계 분석 시작"):
                     st.metric("현재가", f"{row['현재가']:,}원")
                     st.caption(f"신뢰도: {row['신뢰도']}%")
         else:
-            st.info("현재 분석 기준(2,000원 이상 우량주)에 맞는 종목이 없습니다.")
+            st.info("현재 기준에 맞는 종목이 없습니다. 잠시 후 다시 시도해 주세요.")
 
 st.divider()
 
-# 섹션 2: 정밀 차트 분석 (볼린저 밴드 + 거래량)
+# 섹션 2: 정밀 차트 (볼린저 밴드 + 거래량)
 col1, col2 = st.columns([3, 1])
 with col1:
     st.subheader("🔍 종목 정밀 분석 차트")
@@ -72,22 +71,27 @@ with col1:
             target_code = stock_info[stock_info['Name'] == target_name]['Code'].values[0]
             df = fdr.DataReader(target_code).tail(100)
             
-            # 지표 계산
+            # 보조지표 계산
             ma = df['Close'].rolling(20).mean()
             std = df['Close'].rolling(20).std()
             upper = ma + (std * 2)
             lower = ma - (std * 2)
             
-            # 차트 구성 (주가 + 거래량)
+            # 서브플롯 (위: 주가, 아래: 거래량)
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
+            
+            # 캔들스틱 및 밴드
             fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='주가'), row=1, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=upper, line=dict(color='rgba(255,0,0,0.3)'), name='상단밴드'), row=1, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=lower, line=dict(color='rgba(0,255,0,0.3)'), name='하단밴드'), row=1, col=1)
-            fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color='gray', name='거래량'), row=2, col=1)
+            
+            # 거래량 (양봉/음봉 색상 구분)
+            colors = ['red' if df.Open[i] < df.Close[i] else 'blue' for i in range(len(df))]
+            fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=colors, name='거래량'), row=2, col=1)
             
             fig.update_layout(xaxis_rangeslider_visible=False, height=600, template='plotly_dark')
             st.plotly_chart(fig, use_container_width=True)
-        except: st.error("데이터 로딩 중 에러가 발생했습니다.")
+        except: st.error("데이터 로딩 중입니다. 잠시만 기다려 주세요.")
 
 with col2:
     st.subheader("📊 My Portfolio")
