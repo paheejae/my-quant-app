@@ -5,13 +5,13 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # 1. 페이지 설정
-st.set_page_config(page_title="Medallion Final Terminal", layout="wide")
+st.set_page_config(page_title="Medallion Advanced Terminal", layout="wide")
 
 @st.cache_data
 def load_stock_info():
     return fdr.StockListing('KRX')[['Code', 'Name', 'Market']]
 
-# 2. 고속 추천 로직 (2,000원 이상 우량주 스캔)
+# 2. 고속 추천 로직 (현재가 및 필터 강화)
 @st.cache_data(ttl=3600)
 def get_medallion_picks(stock_df):
     sample_list = stock_df.sample(n=min(60, len(stock_df)))
@@ -20,9 +20,11 @@ def get_medallion_picks(stock_df):
     for _, row in sample_list.iterrows():
         try:
             df = fdr.DataReader(row['Code']).tail(30)
+            if len(df) < 20: continue
+            
             curr_price = int(df['Close'].iloc[-1])
-            # [필터] 2,000원 미만 및 데이터 부족 종목 제외
-            if len(df) < 20 or curr_price < 2000: continue 
+            # 2,000원 미만 종목 제외
+            if curr_price < 2000: continue 
             
             ma = df['Close'].mean()
             std = df['Close'].std()
@@ -33,8 +35,11 @@ def get_medallion_picks(stock_df):
             # 통계적 저점 (Z-Score -1.2 이하)
             if z_score < -1.2:
                 picks.append({
-                    '종목명': row['Name'], '코드': row['Code'], 
-                    '현재가': curr_price, '신뢰도': round(abs(z_score)*35, 1)
+                    '종목명': row['Name'], 
+                    '코드': row['Code'], 
+                    '현재가': curr_price, 
+                    '현재금액': f"{curr_price:,}원", # 화면 표시용 포맷팅
+                    '신뢰도': round(abs(z_score)*35, 1)
                 })
         except: continue
     return pd.DataFrame(picks).head(5)
@@ -42,25 +47,26 @@ def get_medallion_picks(stock_df):
 # --- UI 레이아웃 ---
 stock_info = load_stock_info()
 st.title("🏛️ Medallion Quant Intelligence")
-st.caption("시스템 상태: 2,000원 필터 및 거래량 분석 모드 활성 | 가용 현금: 3,000,000원")
+st.caption("시스템 상태: 2,000원 필터 및 실시간 금액 표기 활성")
 
-# 섹션 1: 추천 종목
+# 섹션 1: 추천 종목 (현재금액 강조)
 if st.button("🚀 실시간 통계 분석 시작"):
-    with st.spinner('시장의 통계적 우위를 찾는 중...'):
+    with st.spinner('이상 차트를 걸러내고 우량 종목의 현재가를 불러오는 중...'):
         recomm = get_medallion_picks(stock_info)
         if not recomm.empty:
             cols = st.columns(len(recomm))
             for i, (_, row) in enumerate(recomm.iterrows()):
                 with cols[i]:
                     st.success(f"**{row['종목명']}**")
-                    st.metric("현재가", f"{row['현재가']:,}원")
-                    st.caption(f"신뢰도: {row['신뢰도']}%")
+                    # 현재금액을 가장 큰 글씨로 강조
+                    st.metric(label="현재 금액", value=row['현재금액'])
+                    st.caption(f"통계적 신뢰도: {row['신뢰도']}%")
         else:
-            st.info("현재 기준에 맞는 종목이 없습니다. 잠시 후 다시 시도해 주세요.")
+            st.info("현재 분석 기준에 맞는 종목이 없습니다.")
 
 st.divider()
 
-# 섹션 2: 정밀 차트 (볼린저 밴드 + 거래량)
+# 섹션 2: 정밀 차트 분석 (볼린저 밴드 + 거래량)
 col1, col2 = st.columns([3, 1])
 with col1:
     st.subheader("🔍 종목 정밀 분석 차트")
@@ -71,27 +77,25 @@ with col1:
             target_code = stock_info[stock_info['Name'] == target_name]['Code'].values[0]
             df = fdr.DataReader(target_code).tail(100)
             
-            # 보조지표 계산
             ma = df['Close'].rolling(20).mean()
             std = df['Close'].rolling(20).std()
             upper = ma + (std * 2)
             lower = ma - (std * 2)
             
-            # 서브플롯 (위: 주가, 아래: 거래량)
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
             
-            # 캔들스틱 및 밴드
+            # 1층: 캔들스틱 및 볼린저 밴드
             fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='주가'), row=1, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=upper, line=dict(color='rgba(255,0,0,0.3)'), name='상단밴드'), row=1, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=lower, line=dict(color='rgba(0,255,0,0.3)'), name='하단밴드'), row=1, col=1)
             
-            # 거래량 (양봉/음봉 색상 구분)
-            colors = ['red' if df.Open[i] < df.Close[i] else 'blue' for i in range(len(df))]
-            fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=colors, name='거래량'), row=2, col=1)
+            # 2층: 거래량 (색상 구분: 전일 대비가 아닌 당일 시가 대비)
+            bar_colors = ['red' if df.Close[i] >= df.Open[i] else 'blue' for i in range(len(df))]
+            fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=bar_colors, name='거래량'), row=2, col=1)
             
-            fig.update_layout(xaxis_rangeslider_visible=False, height=600, template='plotly_dark')
+            fig.update_layout(xaxis_rangeslider_visible=False, height=600, template='plotly_dark', margin=dict(t=30, b=10))
             st.plotly_chart(fig, use_container_width=True)
-        except: st.error("데이터 로딩 중입니다. 잠시만 기다려 주세요.")
+        except: st.warning("데이터 로딩 중...")
 
 with col2:
     st.subheader("📊 My Portfolio")
